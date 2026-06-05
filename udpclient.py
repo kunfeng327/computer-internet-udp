@@ -11,7 +11,7 @@ STUDENT_ID = 2119
 WINDOW_SIZE = 3      # 滑动窗口大小
 TIMEOUT = 0.3        # 超时300ms
 MIN_PKT_SIZE = 10    # 最小包长
-MAX_PKT_SIZE = 20    # 最大包长
+MAX_PKT_SIZE = 100    # 最大包长
 # ==============================================================
 
 SID = STUDENT_ID ^ KEY
@@ -58,6 +58,7 @@ def gbn_send_file_packets(packets):
     next_seq = 0
     max_seq = len(packets)
     send_time = {}
+    rtt_samples = []  # 存放历史 RTT（ms）用于自适应超时
     # 用于指示是否已发送过 EOT（客户端表示无更多数据）——不必持久化，只在发送循环中检查
     # 但逻辑为：每次当 next_seq 达到 max_seq（所有数据已发出）时，发送 EOT
 
@@ -92,9 +93,28 @@ def gbn_send_file_packets(packets):
             payload = resp[5:5+dlen].decode()
 
             if cmd == 1 and payload.startswith("ACK"):
-                _, ack, _ = payload.split("|")
-                ack = int(ack)
-                rtt = int((time.time() - send_time[base]) * 1000)
+                # 格式: ACK|<ack_seq>|<hh:MM:SS>
+                parts = payload.split("|")
+                if len(parts) >= 3:
+                    _, ack_str, srv_time_str = parts[:3]
+                else:
+                    # 不完整的 ACK，跳过
+                    continue
+
+                ack = int(ack_str)
+                now = time.time()
+
+                # RTT 计算：优先使用被 ack 的数据包发送时间，其次使用 base 的发送时间
+                sent_t = send_time.get(ack, send_time.get(base, now))
+                rtt = int((now - sent_t) * 1000)
+
+                # 记录 RTT 样本并更新自适应超时（取平均的 5 倍）
+                rtt_samples.append(rtt)
+                if len(rtt_samples) > 50:
+                    rtt_samples.pop(0)
+                avg_rtt = sum(rtt_samples) / len(rtt_samples)
+                adaptive_timeout = max(0.01, (avg_rtt * 5) / 1000.0)
+                client.settimeout(adaptive_timeout)
 
                 old_left = base
                 old_right = base + WINDOW_SIZE - 1
@@ -102,7 +122,7 @@ def gbn_send_file_packets(packets):
                 new_left = base
                 new_right = base + WINDOW_SIZE - 1
 
-                print(f"\n✅ 收到 ACK={ack} | 窗口 [{old_left}~{old_right}] → [{new_left}~{new_right}] | RTT={rtt}ms")
+                print(f"\n✅ 收到 ACK={ack} | 窗口 [{old_left}~{old_right}] → [{new_left}~{new_right}] | RTT={rtt}ms | server_time={srv_time_str} | timeout={adaptive_timeout:.3f}s")
 
         # ====================== 超时重传 ======================
         except socket.timeout:

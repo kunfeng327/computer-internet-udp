@@ -9,7 +9,7 @@ from collections import defaultdict
 BIND_IP = "172.18.203.113"
 PORT = 9999
 KEY = 0x5A3C
-DROP_RATE = 0.1  # 10%丢包
+DROP_RATE = 0.1  # 30%丢包
 GBN_WINDOW_SIZE = 3  # GBN窗口大小（服务端接收窗口）
 TIMEOUT = 5  # 超时时间（秒，可选，客户端侧更关键）
 FLUSH_TIMEOUT = 0.5  # 当缓冲非空且超过该秒数无新包时，强制刷新并发送ACK
