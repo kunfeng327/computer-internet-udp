@@ -2,7 +2,7 @@ import socket
 import struct
 import random
 import time
-import signal  # 新增
+import signal
 from datetime import datetime
 from collections import defaultdict
 
@@ -10,10 +10,10 @@ from collections import defaultdict
 BIND_IP = "172.18.203.113"
 PORT = 9999
 KEY = 0x5A3C
-DROP_RATE = 0.3  # 0=不丢包，方便测试
+DROP_RATE = 0.3
 GBN_WINDOW_SIZE = 5
 
-TIMEOUT = 5
+TIMEOUT = 1
 FLUSH_TIMEOUT = 0.5
 running = True
 
@@ -21,9 +21,8 @@ running = True
 def handle_exit(signum, frame):
     global running
     print("\n🛑 收到 Ctrl+C，服务器正在安全关闭...")
-    running = False
+    running = True
     
-# 注册信号
 signal.signal(signal.SIGINT, handle_exit)
 # ==========================================================
 
@@ -51,7 +50,8 @@ def get_server_time():
 def clean_timeout_clients():
     now = time.time()
     for addr in list(client_states.keys()):
-        if now - client_states[addr]["last_active"] > TIMEOUT * 2:
+        state = client_states[addr]
+        if now - state["last_active"] > TIMEOUT * 2:
             del client_states[addr]
             write_log(f"[{addr}] 客户端超时，清理连接")
             total_processed = state["client_rcv"] + state["client_drop"]
@@ -66,7 +66,6 @@ def flush_partial_buffers():
     for addr, state in client_states.items():
         if not state.get("connected"): continue
         if state.get("buffer") and (now - state.get("last_active", 0) > FLUSH_TIMEOUT):
-            srv_time = get_server_time()
             try:
                 with open("received_from_client.txt", "ab") as rf:
                     for s, m in state["buffer"]:
@@ -75,9 +74,8 @@ def flush_partial_buffers():
                 write_log(f"写入失败（flush）: {e}")
 
             ack_val = state["expected_seq"] - 1
-            ack_msg = f"ACK|{ack_val}|{srv_time}"
-            ack_bytes = ack_msg.encode("utf-8")
-            resp = struct.pack("!BHH", 1, state["sid"], len(ack_bytes)) + ack_bytes
+            # ===================== 7B ACK 包 =====================
+            resp = struct.pack("!BHHH", 1, state["sid"], 0, ack_val)
             try:
                 srv.sendto(resp, addr)
                 state["last_ack"] = ack_val
@@ -101,9 +99,10 @@ while running:
     except:
         continue
 
+    # ===================== 解包 7B 首部 !BHHH =====================
     try:
-        cmd, sid, dlen = struct.unpack("!BHH", raw_data[:5])
-        payload = raw_data[5:5+dlen]
+        cmd, sid, dlen, seq = struct.unpack("!BHHH", raw_data[:7])
+        payload = raw_data[7:7+dlen]
     except:
         continue
 
@@ -113,61 +112,52 @@ while running:
     client_states[addr]["last_active"] = time.time()
     state = client_states[addr]
 
-    # 连接
+    # 连接 cmd=0
     if cmd == 0:
         state["connected"] = True
         state["expected_seq"] = 0
         state["last_ack"] = -1
         state["sid"] = sid
-        srv.sendto(struct.pack("!BHH", 0, sid, 0), addr)
+        # ===================== 7B 回复 =====================
+        srv.sendto(struct.pack("!BHHH", 0, sid, 0, 0), addr)
         write_log(f"[{addr}] 学生 {real_stu} 连接成功")
 
-    # 数据报文（二进制 80 字节）
+    # 数据报文 cmd=1
     elif cmd == 1:
         if not state["connected"]: continue
 
-        # ==================== 正确解析：seq|二进制数据 ====================
-        try:
-            payload_str = payload.decode("utf-8", errors="ignore")
-            seq_str, content_bin = payload_str.split("|", 1)
-            seq = int(seq_str)
-            content = content_bin.encode("utf-8")
-        except:
-            continue
+        # 客户端已删除 seq| ，直接使用首部中的 seq
+        seq_num = seq
 
-        srv_time = get_server_time()
+        # 模拟丢包
         if random.random() < DROP_RATE:
-            write_log(f"[{addr}] 丢包 seq={seq}")
+            write_log(f"[{addr}] 丢包 seq={seq_num}")
             state["client_drop"] += 1
             continue
 
-                # ==================== GBN 累计ACK 标准逻辑 ====================
-        if seq == state["expected_seq"]:
-            # 按序到达：缓存 + 期望序号+1
-            state["buffer"].append((seq, content))
+        # GBN 按序接收
+        if seq_num == state["expected_seq"]:
+            state["buffer"].append((seq_num, payload))
             state["expected_seq"] += 1
-            write_log(f"[{addr}] 接收 seq={seq}")
+            write_log(f"[{addr}] 接收 seq={seq_num}")
             state["client_rcv"] += 1
-            # 累计确认：返回最新连续ACK
             state["last_ack"] = state["expected_seq"] - 1
 
-            # 窗口满写入文件
             if len(state["buffer"]) >= GBN_WINDOW_SIZE:
                 with open("received_from_client.txt", "ab") as f:
                     for s, m in state["buffer"]:
                         f.write(m)
                 state["buffer"].clear()
 
-        # ============== 核心：不管什么情况，都返回最后累计ACK ==============
-        # 乱序 / 丢包 / 重复：全部返回 last_ack
+        # 回复 ACK（7B）
         last_ack = state.get("last_ack", -1)
-        if seq > state["expected_seq"]:
-            write_log(f"[{addr}] 乱序包 seq={seq}，丢弃，回复 ACK={last_ack}")
-        ack_msg = f"ACK|{last_ack}|{srv_time}"
-        resp = struct.pack("!BHH", 1, sid, len(ack_msg.encode())) + ack_msg.encode()
+        if seq_num > state["expected_seq"]:
+            write_log(f"[{addr}] 乱序包 seq={seq_num}，丢弃，回复 ACK={last_ack}")
+        # ===================== 7B ACK =====================
+        resp = struct.pack("!BHHH", 1, sid, 0, last_ack)
         srv.sendto(resp, addr)
 
-    # EOT 结束
+    # EOT 结束 cmd=2
     elif cmd == 2:
         if not state["connected"]: continue
         write_log(f"[{addr}] 收到 EOT")
@@ -177,11 +167,11 @@ while running:
                 for s, m in state["buffer"]:
                     f.write(m)
             state["buffer"].clear()
-        
 
+        # 最终 ACK
         ack_val = state["expected_seq"] - 1
-        ack_msg = f"ACK|{ack_val}|{get_server_time()}"
-        resp = struct.pack("!BHH", 1, sid, len(ack_msg.encode())) + ack_msg.encode()
+        # ===================== 7B =====================
+        resp = struct.pack("!BHHH", 1, sid, 0, ack_val)
         srv.sendto(resp, addr)
         state["last_ack"] = ack_val
 

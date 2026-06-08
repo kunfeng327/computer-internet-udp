@@ -27,11 +27,12 @@ dup_ack_count = defaultdict(int)
 timeout_retrans_count = 0
 
 def connect():
-    pkt = struct.pack("!BHH", 0, SID, 0)
+    # ====================== 7B 首部 !BHHH ======================
+    pkt = struct.pack("!BHHH", 0, SID, 0, 0)
     client.sendto(pkt, (SERVER_IP, PORT))
     try:
         resp, _ = client.recvfrom(1024)
-        cmd, _, _ = struct.unpack("!BHH", resp[:5])
+        cmd, _, _, _ = struct.unpack("!BHHH", resp[:7])
         return cmd == 0
     except:
         return False
@@ -73,8 +74,9 @@ def gbn_send_file_packets(packets):
     while base < max_seq:
         while next_seq < max_seq and next_seq < base + WINDOW_PKT_BATCH:
             seq, content = packets[next_seq]
-            payload = f"{seq}|".encode() + content
-            pkt = struct.pack("!BHH", 1, SID, len(payload)) + payload
+            # ====================== 7B 首部 !BHHH ======================
+            payload = content
+            pkt = struct.pack("!BHHH", 1, SID, len(payload), seq) + payload
             client.sendto(pkt, (SERVER_IP, PORT))
 
             if seq not in send_count:
@@ -85,87 +87,74 @@ def gbn_send_file_packets(packets):
             send_time[seq] = time.time()
             start = seq * PACKET_FIXED_SIZE
             end = start + len(packets[seq][1]) - 1
-            # ======================
-            # 改这里 1
             print(f"第 {seq} 个（第 {start}~{end} 字节）client 端已经发送")
-            # ======================
             next_seq += 1
 
         try:
             resp, _ = client.recvfrom(2048)
-            cmd, _, dlen = struct.unpack("!BHH", resp[:5])
-            payload = resp[5:5+dlen].decode()
+            # ====================== 7B 解包 ======================
+            cmd, sid, dlen, ack = struct.unpack("!BHHH", resp[:7])
+            payload = resp[7:7+dlen]
+            now = time.time()
 
-            if cmd == 1 and payload.startswith("ACK"):
-                parts = payload.split("|")
-                ack = int(parts[1])
-                now = time.time()
+            for s in range(base, ack + 1):
+                if s >=0 and s < max_seq and not acked[s]:
+                    acked[s] = True
+                    if s in send_time:
+                        rtt = int((now - send_time[s]) * 1000)
+                        rtt_list.append(rtt)
+                        start = s * PACKET_FIXED_SIZE
+                        end = start + len(packets[s][1]) - 1
+                        print(f"\n第 {s} 个（第 {start}~{end} 字节）server 端已经收到，RTT 是 {rtt} ms")
 
-                for s in range(base, ack + 1):
-                    if s < max_seq and not acked[s]:
-                        acked[s] = True
-                        if s in send_time:
-                            rtt = int((now - send_time[s]) * 1000)
-                            rtt_list.append(rtt)
-                            start = s * PACKET_FIXED_SIZE
-                            end = start + len(packets[s][1]) - 1
-                            # ======================
-                            # 改这里 2
-                            print(f"\n第 {s} 个（第 {start}~{end} 字节）server 端已经收到，RTT 是 {rtt} ms")
-                            # ======================
+            if (base == 0 and ack == -1) or (ack == base - 1):
+                dup_ack_count[ack] +=1
+                print(f"🔁 收到重复ACK: {ack} (累计 {dup_ack_count[ack]} 次)")
+                if dup_ack_count[ack] >= 3:
+                    print(f"\n🚀 快速重传 整个窗口 seq={base} ~ {next_seq-1}")
+                    fast_retrans += 1
+                    dup_ack_count[ack] = 0
+                    for seq in range(base, next_seq):
+                        s, content = packets[seq]
+                        # ====================== 7B 首部 ======================
+                        payload = content
+                        pkt = struct.pack("!BHHH", 1, SID, len(payload), s) + payload
+                        client.sendto(pkt, (SERVER_IP, PORT))
+                        send_count[s] += 1
+                        total_send_pkts += 1
+                        send_time[s] = time.time()
+                        start = s * PACKET_FIXED_SIZE
+                        end = start + len(packets[s][1]) - 1
+                        print(f"重传第 {s} 个（第 {start}~{end} 字节）数据包。")
 
-                if ack == base - 1:
-                    dup_ack_count[ack] +=1
-                    print(f"🔁 收到重复ACK: {ack} (累计 {dup_ack_count[ack]} 次)")
-                    if dup_ack_count[ack] >= 3:
-                        print(f"\n🚀 快速重传 整个窗口 seq={base} ~ {next_seq-1}")
-                        fast_retrans += 1
-                        dup_ack_count[ack] = 0
-                        for seq in range(base, next_seq):
-                            s, content = packets[seq]
-                            payload = f"{s}|".encode() + content
-                            pkt = struct.pack("!BHH", 1, SID, len(payload)) + payload
-                            client.sendto(pkt, (SERVER_IP, PORT))
-                            send_count[s] += 1
-                            total_send_pkts += 1
-                            send_time[s] = time.time()
-                            start = s * PACKET_FIXED_SIZE
-                            end = start + len(packets[s][1]) - 1
-                            # ======================
-                            # 改这里 3
-                            print(f"重传第 {s} 个（第 {start}~{end} 字节）数据包。")
-                            # ======================
+            while base < max_seq and acked[base]:
+                base += 1
 
-                old_base = base
-                while base < max_seq and acked[base]:
-                    base += 1
+            while next_seq < max_seq and next_seq < base + WINDOW_PKT_BATCH:
+                seq, content = packets[next_seq]
+                # ====================== 7B 首部 ======================
+                payload = content
+                pkt = struct.pack("!BHHH", 1, SID, len(payload), seq) + payload
+                client.sendto(pkt, (SERVER_IP, PORT))
 
-                while next_seq < max_seq and next_seq < base + WINDOW_PKT_BATCH:
-                    seq, content = packets[next_seq]
-                    payload = f"{seq}|".encode() + content
-                    pkt = struct.pack("!BHH", 1, SID, len(payload)) + payload
-                    client.sendto(pkt, (SERVER_IP, PORT))
-
-                    if seq not in send_count:
-                        send_count[seq] = 0
-                    send_count[seq] += 1
-                    total_send_pkts += 1
-                    send_time[seq] = time.time()
-                    start = seq * PACKET_FIXED_SIZE
-                    end = start + len(packets[seq][1]) - 1
-                    # ======================
-                    # 改这里 4
-                    print(f"第 {seq} 个（第 {start}~{end} 字节）client 端已经发送")
-                    # ======================
-                    next_seq += 1
+                if seq not in send_count:
+                    send_count[seq] = 0
+                send_count[seq] += 1
+                total_send_pkts += 1
+                send_time[seq] = time.time()
+                start = seq * PACKET_FIXED_SIZE
+                end = start + len(packets[seq][1]) - 1
+                print(f"第 {seq} 个（第 {start}~{end} 字节）client 端已经发送")
+                next_seq += 1
 
         except socket.timeout:
             print(f"\n⏰ 超时！重传第 {base}~{next_seq-1} 号数据包")
             timeout_retrans_count += 1
             for seq in range(base, next_seq):
                 s, content = packets[seq]
-                payload = f"{s}|".encode() + content
-                pkt = struct.pack("!BHH", 1, SID, len(payload)) + payload
+                # ====================== 7B 首部 ======================
+                payload = content
+                pkt = struct.pack("!BHHH", 1, SID, len(payload), s) + payload
                 client.sendto(pkt, (SERVER_IP, PORT))
 
                 send_count[s] += 1
@@ -173,13 +162,11 @@ def gbn_send_file_packets(packets):
                 send_time[s] = time.time()
                 start = s * PACKET_FIXED_SIZE
                 end = start + len(packets[s][1]) - 1
-                # ======================
-                # 改这里 5（超时重传）
                 print(f"重传第 {s} 个（第 {start}~{end} 字节）数据包。")
-                # ======================
 
     print("\n发送 EOT（表示无更多数据）")
-    eot_pkt = struct.pack("!BHH", 2, SID, 3) + b"EOT"
+    # ====================== 7B EOT ======================
+    eot_pkt = struct.pack("!BHHH", 2, SID, 3, 0) + b"EOT"
     client.sendto(eot_pkt, (SERVER_IP, PORT))
 
     print("\n📊 传输汇总统计")
