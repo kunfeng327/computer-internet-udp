@@ -10,7 +10,7 @@ from collections import defaultdict
 BIND_IP = "172.18.203.113"
 PORT = 9999
 KEY = 0x5A3C
-DROP_RATE = 0.3
+DROP_RATE = 0
 GBN_WINDOW_SIZE = 5
 
 TIMEOUT = 1
@@ -21,7 +21,7 @@ running = True
 def handle_exit(signum, frame):
     global running
     print("\n🛑 收到 Ctrl+C，服务器正在安全关闭...")
-    running = True
+    running = False
     
 signal.signal(signal.SIGINT, handle_exit)
 # ==========================================================
@@ -75,7 +75,7 @@ def flush_partial_buffers():
 
             ack_val = state["expected_seq"] - 1
             # ===================== 7B ACK 包 =====================
-            resp = struct.pack("!BHHH", 1, state["sid"], 0, ack_val)
+            resp = struct.pack("!BHHh", 1, state["sid"], 0, ack_val)
             try:
                 srv.sendto(resp, addr)
                 state["last_ack"] = ack_val
@@ -154,7 +154,7 @@ while running:
         if seq_num > state["expected_seq"]:
             write_log(f"[{addr}] 乱序包 seq={seq_num}，丢弃，回复 ACK={last_ack}")
         # ===================== 7B ACK =====================
-        resp = struct.pack("!BHHH", 1, sid, 0, last_ack)
+        resp = struct.pack("!BHHh", 1, sid, 0, last_ack)
         srv.sendto(resp, addr)
 
     # EOT 结束 cmd=2
@@ -171,7 +171,7 @@ while running:
         # 最终 ACK
         ack_val = state["expected_seq"] - 1
         # ===================== 7B =====================
-        resp = struct.pack("!BHHH", 1, sid, 0, ack_val)
+        resp = struct.pack("!BHHh", 1, sid, 0, ack_val)
         srv.sendto(resp, addr)
         state["last_ack"] = ack_val
 

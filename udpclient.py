@@ -28,11 +28,11 @@ timeout_retrans_count = 0
 
 def connect():
     # ====================== 7B 首部 !BHHH ======================
-    pkt = struct.pack("!BHHH", 0, SID, 0, 0)
+    pkt = struct.pack("!BHHh", 0, SID, 0, 0)
     client.sendto(pkt, (SERVER_IP, PORT))
     try:
         resp, _ = client.recvfrom(1024)
-        cmd, _, _, _ = struct.unpack("!BHHH", resp[:7])
+        cmd, _, _, _ = struct.unpack("!BHHh", resp[:7])
         return cmd == 0
     except:
         return False
@@ -74,9 +74,9 @@ def gbn_send_file_packets(packets):
     while base < max_seq:
         while next_seq < max_seq and next_seq < base + WINDOW_PKT_BATCH:
             seq, content = packets[next_seq]
-            # ====================== 7B 首部 !BHHH ======================
+            # ====================== 7B 首部 !BHHh ======================
             payload = content
-            pkt = struct.pack("!BHHH", 1, SID, len(payload), seq) + payload
+            pkt = struct.pack("!BHHh", 1, SID, len(payload), seq) + payload
             client.sendto(pkt, (SERVER_IP, PORT))
 
             if seq not in send_count:
@@ -93,7 +93,7 @@ def gbn_send_file_packets(packets):
         try:
             resp, _ = client.recvfrom(2048)
             # ====================== 7B 解包 ======================
-            cmd, sid, dlen, ack = struct.unpack("!BHHH", resp[:7])
+            cmd, sid, dlen, ack = struct.unpack("!BHHh", resp[:7])
             payload = resp[7:7+dlen]
             now = time.time()
 
@@ -118,7 +118,7 @@ def gbn_send_file_packets(packets):
                         s, content = packets[seq]
                         # ====================== 7B 首部 ======================
                         payload = content
-                        pkt = struct.pack("!BHHH", 1, SID, len(payload), s) + payload
+                        pkt = struct.pack("!BHHh", 1, SID, len(payload), s) + payload
                         client.sendto(pkt, (SERVER_IP, PORT))
                         send_count[s] += 1
                         total_send_pkts += 1
@@ -134,7 +134,7 @@ def gbn_send_file_packets(packets):
                 seq, content = packets[next_seq]
                 # ====================== 7B 首部 ======================
                 payload = content
-                pkt = struct.pack("!BHHH", 1, SID, len(payload), seq) + payload
+                pkt = struct.pack("!BHHh", 1, SID, len(payload), seq) + payload
                 client.sendto(pkt, (SERVER_IP, PORT))
 
                 if seq not in send_count:
@@ -154,7 +154,7 @@ def gbn_send_file_packets(packets):
                 s, content = packets[seq]
                 # ====================== 7B 首部 ======================
                 payload = content
-                pkt = struct.pack("!BHHH", 1, SID, len(payload), s) + payload
+                pkt = struct.pack("!BHHh", 1, SID, len(payload), s) + payload
                 client.sendto(pkt, (SERVER_IP, PORT))
 
                 send_count[s] += 1
@@ -166,7 +166,7 @@ def gbn_send_file_packets(packets):
 
     print("\n发送 EOT（表示无更多数据）")
     # ====================== 7B EOT ======================
-    eot_pkt = struct.pack("!BHHH", 2, SID, 3, 0) + b"EOT"
+    eot_pkt = struct.pack("!BHHh", 2, SID, 3, 0) + b"EOT"
     client.sendto(eot_pkt, (SERVER_IP, PORT))
 
     print("\n📊 传输汇总统计")
