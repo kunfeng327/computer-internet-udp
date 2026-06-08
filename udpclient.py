@@ -2,7 +2,8 @@ import socket
 import struct
 import time
 import pandas as pd
-from collections import defaultdict  # 加这行
+from collections import defaultdict
+
 # ==================== 配置 ====================
 SERVER_IP = "172.18.203.113"
 PORT = 9999
@@ -19,10 +20,10 @@ client = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 client.settimeout(TIMEOUT)
 
 # 统计全局变量
-send_count = {}  # 记录每个seq发送次数（用于丢包率）
+send_count = {}
 total_send_pkts = 0
 rtt_list = []
-dup_ack_count = defaultdict(int)  # 新增：重复ACK计数
+dup_ack_count = defaultdict(int)
 timeout_retrans_count = 0
 
 def connect():
@@ -60,7 +61,7 @@ def load_and_split_file():
 
 def gbn_send_file_packets(packets):
     global total_send_pkts, timeout_retrans_count
-    fast_retrans = 0  # 新增：快速重传计数
+    fast_retrans = 0
     base = 0
     next_seq = 0
     max_seq = len(packets)
@@ -70,14 +71,12 @@ def gbn_send_file_packets(packets):
     print("=== 开始 按批次（最多5个）发送，每包固定80字节 ===\n")
 
     while base < max_seq:
-        # 一次性发满窗口 5 个
         while next_seq < max_seq and next_seq < base + WINDOW_PKT_BATCH:
             seq, content = packets[next_seq]
             payload = f"{seq}|".encode() + content
             pkt = struct.pack("!BHH", 1, SID, len(payload)) + payload
             client.sendto(pkt, (SERVER_IP, PORT))
 
-            # 统计发送次数
             if seq not in send_count:
                 send_count[seq] = 0
             send_count[seq] += 1
@@ -86,10 +85,12 @@ def gbn_send_file_packets(packets):
             send_time[seq] = time.time()
             start = seq * PACKET_FIXED_SIZE
             end = start + len(packets[seq][1]) - 1
-            print(f"第 {seq+1} 个（第 {start}~{end} 字节）client 端已经发送")
+            # ======================
+            # 改这里 1
+            print(f"第 {seq} 个（第 {start}~{end} 字节）client 端已经发送")
+            # ======================
             next_seq += 1
 
-        # 接收 ACK
         try:
             resp, _ = client.recvfrom(2048)
             cmd, _, dlen = struct.unpack("!BHH", resp[:5])
@@ -100,8 +101,6 @@ def gbn_send_file_packets(packets):
                 ack = int(parts[1])
                 now = time.time()
 
-                                # ==================== 累计ACK + 快速重传 ====================
-                # 累计确认：<= ack 的全部标记为已收到
                 for s in range(base, ack + 1):
                     if s < max_seq and not acked[s]:
                         acked[s] = True
@@ -110,17 +109,18 @@ def gbn_send_file_packets(packets):
                             rtt_list.append(rtt)
                             start = s * PACKET_FIXED_SIZE
                             end = start + len(packets[s][1]) - 1
-                            print(f"\n第 {s+1} 个（第 {start}~{end} 字节）server 端已经收到，RTT 是 {rtt} ms")
+                            # ======================
+                            # 改这里 2
+                            print(f"\n第 {s} 个（第 {start}~{end} 字节）server 端已经收到，RTT 是 {rtt} ms")
+                            # ======================
 
-                # 快速重传：收到3次重复ACK立即重传base包
                 if ack == base - 1:
                     dup_ack_count[ack] +=1
                     print(f"🔁 收到重复ACK: {ack} (累计 {dup_ack_count[ack]} 次)")
                     if dup_ack_count[ack] >= 3:
                         print(f"\n🚀 快速重传 整个窗口 seq={base} ~ {next_seq-1}")
-                        # 重传整个未确认窗口
                         fast_retrans += 1
-                        dup_ack_count[ack] = 0  # 重置计数
+                        dup_ack_count[ack] = 0
                         for seq in range(base, next_seq):
                             s, content = packets[seq]
                             payload = f"{s}|".encode() + content
@@ -131,14 +131,15 @@ def gbn_send_file_packets(packets):
                             send_time[s] = time.time()
                             start = s * PACKET_FIXED_SIZE
                             end = start + len(packets[s][1]) - 1
-                            print(f"重传第 {s+1} 个（第 {start}~{end} 字节）数据包。")
+                            # ======================
+                            # 改这里 3
+                            print(f"重传第 {s} 个（第 {start}~{end} 字节）数据包。")
+                            # ======================
 
-                # 滑动窗口
                 old_base = base
                 while base < max_seq and acked[base]:
                     base += 1
 
-                # 【关键】窗口滑动后，立刻发满整个新窗口（你要的功能）
                 while next_seq < max_seq and next_seq < base + WINDOW_PKT_BATCH:
                     seq, content = packets[next_seq]
                     payload = f"{seq}|".encode() + content
@@ -152,9 +153,11 @@ def gbn_send_file_packets(packets):
                     send_time[seq] = time.time()
                     start = seq * PACKET_FIXED_SIZE
                     end = start + len(packets[seq][1]) - 1
-                    print(f"第 {seq+1} 个（第 {start}~{end} 字节）client 端已经发送")
+                    # ======================
+                    # 改这里 4
+                    print(f"第 {seq} 个（第 {start}~{end} 字节）client 端已经发送")
+                    # ======================
                     next_seq += 1
-                # ===========================================================
 
         except socket.timeout:
             print(f"\n⏰ 超时！重传第 {base}~{next_seq-1} 号数据包")
@@ -170,23 +173,19 @@ def gbn_send_file_packets(packets):
                 send_time[s] = time.time()
                 start = s * PACKET_FIXED_SIZE
                 end = start + len(packets[s][1]) - 1
-                print(f"重传第 {s+1} 个（第 {start}~{end} 字节）数据包。")
+                # ======================
+                # 改这里 5（超时重传）
+                print(f"重传第 {s} 个（第 {start}~{end} 字节）数据包。")
+                # ======================
 
-    # 发送 EOT
     print("\n发送 EOT（表示无更多数据）")
     eot_pkt = struct.pack("!BHH", 2, SID, 3) + b"EOT"
     client.sendto(eot_pkt, (SERVER_IP, PORT))
 
-    # ===================== (8) 汇总统计 =====================
-    # print("\n" + "="*50)
-    print("📊 传输汇总统计")
-    # print("="*50)
-
+    print("\n📊 传输汇总统计")
     EXPECTED_PKT = len(packets)
-    #超时加上快速重传次数为丢包次数
-    # fast_retrans = sum(dup_ack_count.values())
     total_lost = fast_retrans + timeout_retrans_count
-    丢包率 = (total_lost / total_send_pkts) * 100 if total_send_pkts > 0 else 0
+    丢包率 = (total_lost / (total_lost + EXPECTED_PKT)) * 100 if (total_lost + EXPECTED_PKT) > 0 else 0
     df = pd.Series(rtt_list)
     max_rtt = df.max()
     min_rtt = df.min()
@@ -200,7 +199,6 @@ def gbn_send_file_packets(packets):
     print(f"最小RTT: {min_rtt} ms")
     print(f"平均RTT: {avg_rtt:.2f} ms")
     print(f"RTT标准差: {std_rtt:.2f} ms")
-    # print("="*50)
 
 if __name__ == "__main__":
     if connect():
