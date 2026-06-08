@@ -10,8 +10,9 @@ from collections import defaultdict
 BIND_IP = "172.18.203.113"
 PORT = 9999
 KEY = 0x5A3C
-DROP_RATE = 0.1  # 0=不丢包，方便测试
+DROP_RATE = 0.3  # 0=不丢包，方便测试
 GBN_WINDOW_SIZE = 5
+
 TIMEOUT = 5
 FLUSH_TIMEOUT = 0.5
 running = True
@@ -21,7 +22,7 @@ def handle_exit(signum, frame):
     global running
     print("\n🛑 收到 Ctrl+C，服务器正在安全关闭...")
     running = False
-
+    
 # 注册信号
 signal.signal(signal.SIGINT, handle_exit)
 # ==========================================================
@@ -32,7 +33,9 @@ client_states = defaultdict(lambda: {
     "buffer": [],
     "last_active": 0,
     "last_ack": -1,
-    "sid": 0
+    "sid": 0,
+    "client_rcv": 0,
+    "client_drop": 0
 })
 
 def write_log(msg):
@@ -51,6 +54,12 @@ def clean_timeout_clients():
         if now - client_states[addr]["last_active"] > TIMEOUT * 2:
             del client_states[addr]
             write_log(f"[{addr}] 客户端超时，清理连接")
+            total_processed = state["client_rcv"] + state["client_drop"]
+            if total_processed > 0:
+                drop_rate_real = (state["client_drop"] / total_processed) * 100
+            else:
+                drop_rate_real = 0.0
+            print(f"\n📊 统计结果：总接收={state['client_rcv']}，总丢包={state['client_drop']}，丢包率={drop_rate_real:.2f}%")
 
 def flush_partial_buffers():
     now = time.time()
@@ -129,33 +138,34 @@ while running:
         srv_time = get_server_time()
         if random.random() < DROP_RATE:
             write_log(f"[{addr}] 丢包 seq={seq}")
+            state["client_drop"] += 1
             continue
 
-        # 按序到达：立即ACK
+                # ==================== GBN 累计ACK 标准逻辑 ====================
         if seq == state["expected_seq"]:
+            # 按序到达：缓存 + 期望序号+1
             state["buffer"].append((seq, content))
             state["expected_seq"] += 1
-            write_log(f"[{addr}] 接收 seq={seq} 缓冲={len(state['buffer'])}")
+            write_log(f"[{addr}] 接收 seq={seq}")
+            state["client_rcv"] += 1
+            # 累计确认：返回最新连续ACK
+            state["last_ack"] = state["expected_seq"] - 1
 
-            # 立刻回ACK
-            ack_msg = f"ACK|{seq}|{srv_time}"
-            ack_bytes = ack_msg.encode("utf-8")
-            resp = struct.pack("!BHH", 1, sid, len(ack_bytes)) + ack_bytes
-            srv.sendto(resp, addr)
-            state["last_ack"] = seq
-
+            # 窗口满写入文件
             if len(state["buffer"]) >= GBN_WINDOW_SIZE:
                 with open("received_from_client.txt", "ab") as f:
                     for s, m in state["buffer"]:
                         f.write(m)
                 state["buffer"].clear()
 
-        else:
-            # 重复/乱序：发最后ACK
-            last_ack = state.get("last_ack", -1)
-            ack_msg = f"ACK|{last_ack}|{srv_time}"
-            resp = struct.pack("!BHH", 1, sid, len(ack_msg.encode())) + ack_msg.encode()
-            srv.sendto(resp, addr)
+        # ============== 核心：不管什么情况，都返回最后累计ACK ==============
+        # 乱序 / 丢包 / 重复：全部返回 last_ack
+        last_ack = state.get("last_ack", -1)
+        if seq > state["expected_seq"]:
+            write_log(f"[{addr}] 乱序包 seq={seq}，丢弃，回复 ACK={last_ack}")
+        ack_msg = f"ACK|{last_ack}|{srv_time}"
+        resp = struct.pack("!BHH", 1, sid, len(ack_msg.encode())) + ack_msg.encode()
+        srv.sendto(resp, addr)
 
     # EOT 结束
     elif cmd == 2:
