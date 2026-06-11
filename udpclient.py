@@ -24,7 +24,7 @@ send_count = {}
 total_send_pkts = 0
 rtt_list = []
 dup_ack_count = defaultdict(int)
-timeout_retrans_count = 0
+# timeout_retrans_count = 0
 
 def connect():
     # ====================== 7B 首部 !BHHH ======================
@@ -61,7 +61,7 @@ def load_and_split_file():
     return packets
 
 def gbn_send_file_packets(packets):
-    global total_send_pkts, timeout_retrans_count
+    global total_send_pkts
     fast_retrans = 0
     base = 0
     next_seq = 0
@@ -103,6 +103,10 @@ def gbn_send_file_packets(packets):
                     if s in send_time:
                         rtt = int((now - send_time[s]) * 1000)
                         rtt_list.append(rtt)
+                            # 动态 RTO：最近 5 次 RTT 平均值 × 2，不低于 100ms
+                        recent = rtt_list[-5:]
+                        avg_rtt = sum(recent) / len(recent)
+                        client.settimeout(max(avg_rtt * 2 / 1000, 0.1))
                         start = s * PACKET_FIXED_SIZE
                         end = start + len(packets[s][1]) - 1
                         print(f"\n第 {s} 个（第 {start}~{end} 字节）server 端已经收到，RTT 是 {rtt} ms")
@@ -110,7 +114,7 @@ def gbn_send_file_packets(packets):
             if (base == 0 and ack == -1) or (ack == base - 1):
                 dup_ack_count[ack] +=1
                 print(f"🔁 收到重复ACK: {ack} (累计 {dup_ack_count[ack]} 次)")
-                if dup_ack_count[ack] >= 3:
+                if dup_ack_count[ack] >= 2:
                     print(f"\n🚀 快速重传 整个窗口 seq={base} ~ {next_seq-1}")
                     fast_retrans += 1
                     dup_ack_count[ack] = 0
@@ -171,8 +175,8 @@ def gbn_send_file_packets(packets):
 
     print("\n📊 传输汇总统计")
     EXPECTED_PKT = len(packets)
-    total_lost = fast_retrans + timeout_retrans_count
-    丢包率 = (total_lost / (total_lost + EXPECTED_PKT)) * 100 if (total_lost + EXPECTED_PKT) > 0 else 0
+    # total_lost = fast_retrans + timeout_retrans_count
+    丢包率 = (1 - EXPECTED_PKT / (total_send_pkts)) * 100 if total_send_pkts > 0 else 0
     df = pd.Series(rtt_list)
     max_rtt = df.max()
     min_rtt = df.min()
@@ -180,7 +184,8 @@ def gbn_send_file_packets(packets):
     std_rtt = df.std()
 
     print(f"总包数（期望）: {EXPECTED_PKT}")
-    print(f"丢包数: {total_lost}, 包括 {fast_retrans} 个快速重传和 {timeout_retrans_count} 个超时重传")
+    print(f"总发送包数: {total_send_pkts}")
+    # print(f"丢包数: {total_lost}, 包括 {fast_retrans} 个快速重传和 {timeout_retrans_count} 个超时重传")
     print(f"丢包率: {丢包率:.2f}%")
     print(f"最大RTT: {max_rtt} ms")
     print(f"最小RTT: {min_rtt} ms")
