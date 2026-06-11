@@ -1,13 +1,14 @@
 import socket
 import struct
+import sys
 import time
 import pandas as pd
 from collections import defaultdict
 from datetime import datetime
 
 # ==================== 配置 ====================
-SERVER_IP = "172.18.203.113"
-PORT = 9999
+SERVER_IP = sys.argv[1] if len(sys.argv) > 1 else "172.18.203.113"
+PORT = int(sys.argv[2]) if len(sys.argv) > 2 else 9999
 KEY = 0x5A3C
 STUDENT_ID = 2119
 TIMEOUT = 0.3
