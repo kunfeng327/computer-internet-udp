@@ -10,7 +10,7 @@ from collections import defaultdict
 BIND_IP = "172.18.203.113"
 PORT = 9999
 KEY = 0x5A3C
-DROP_RATE = 0
+DROP_RATE = 0.1
 GBN_WINDOW_SIZE = 5
 
 TIMEOUT = 1
@@ -38,14 +38,16 @@ client_states = defaultdict(lambda: {
 })
 
 def write_log(msg):
-    timestr = time.strftime("%Y-%m-%d %H:%M:%S")
+    now = datetime.now()
+    timestr = now.strftime("%Y-%m-%d %H:%M:%S.") + f"{now.microsecond:06d}"
     log = f"[{timestr}] {msg}"
     print(log)
     with open("run_log.txt", "a", encoding="utf-8") as f:
         f.write(log + "\n")
 
 def get_server_time():
-    return datetime.now().strftime("%H:%M:%S")
+    now = datetime.now()
+    return now.strftime("%H:%M:%S.") + f"{now.microsecond:06d}"
 
 def clean_timeout_clients():
     now = time.time()
