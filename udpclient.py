@@ -3,6 +3,7 @@ import struct
 import time
 import pandas as pd
 from collections import defaultdict
+from datetime import datetime
 
 # ==================== 配置 ====================
 SERVER_IP = "172.18.203.113"
@@ -26,6 +27,12 @@ rtt_list = []
 dup_ack_count = defaultdict(int)
 timeout_retrans_count = 0
 
+def write_log(msg):
+    now = datetime.now()
+    timestr = now.strftime("%Y-%m-%d %H:%M:%S.") + f"{now.microsecond:06d}"
+    with open("client_log.txt", "a", encoding="utf-8") as f:
+        f.write(f"[{timestr}] {msg}\n")
+ 
 def connect():
     # ====================== 7B 首部 !BHHH ======================
     pkt = struct.pack("!BHHh", 0, SID, 0, 0)
@@ -88,6 +95,7 @@ def gbn_send_file_packets(packets):
             start = seq * PACKET_FIXED_SIZE
             end = start + len(packets[seq][1]) - 1
             print(f"第 {seq} 个（第 {start}~{end} 字节）client 端已经发送")
+            write_log(f"发包 seq={seq}")
             next_seq += 1
 
         try:
@@ -106,12 +114,15 @@ def gbn_send_file_packets(packets):
                         start = s * PACKET_FIXED_SIZE
                         end = start + len(packets[s][1]) - 1
                         print(f"\n第 {s} 个（第 {start}~{end} 字节）server 端已经收到，RTT 是 {rtt} ms")
+                        write_log(f"收包 seq={s}, RTT={rtt}ms")
 
             if (base == 0 and ack == -1) or (ack == base - 1):
                 dup_ack_count[ack] +=1
                 print(f"🔁 收到重复ACK: {ack} (累计 {dup_ack_count[ack]} 次)")
+                write_log(f"重复ACK={ack} x{dup_ack_count[ack]}")
                 if dup_ack_count[ack] >= 3:
                     print(f"\n🚀 快速重传 整个窗口 seq={base} ~ {next_seq-1}")
+                    write_log(f"快速重传 window={base}~{next_seq-1}")
                     fast_retrans += 1
                     dup_ack_count[ack] = 0
                     for seq in range(base, next_seq):
@@ -126,6 +137,7 @@ def gbn_send_file_packets(packets):
                         start = s * PACKET_FIXED_SIZE
                         end = start + len(packets[s][1]) - 1
                         print(f"重传第 {s} 个（第 {start}~{end} 字节）数据包。")
+                        write_log(f"重传 seq={s}")
 
             while base < max_seq and acked[base]:
                 base += 1
@@ -145,10 +157,12 @@ def gbn_send_file_packets(packets):
                 start = seq * PACKET_FIXED_SIZE
                 end = start + len(packets[seq][1]) - 1
                 print(f"第 {seq} 个（第 {start}~{end} 字节）client 端已经发送")
+                write_log(f"发包 seq={seq}")
                 next_seq += 1
 
         except socket.timeout:
             print(f"\n⏰ 超时！重传第 {base}~{next_seq-1} 号数据包")
+            write_log(f"超时 window={base}~{next_seq-1}")
             timeout_retrans_count += 1
             for seq in range(base, next_seq):
                 s, content = packets[seq]
@@ -163,6 +177,7 @@ def gbn_send_file_packets(packets):
                 start = s * PACKET_FIXED_SIZE
                 end = start + len(packets[s][1]) - 1
                 print(f"重传第 {s} 个（第 {start}~{end} 字节）数据包。")
+                write_log(f"重传 seq={s}")
 
     print("\n发送 EOT（表示无更多数据）")
     # ====================== 7B EOT ======================
