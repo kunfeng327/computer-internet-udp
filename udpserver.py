@@ -38,14 +38,16 @@ client_states = defaultdict(lambda: {
 })
 
 def write_log(msg):
-    timestr = time.strftime("%Y-%m-%d %H:%M:%S.") + f"{int(time.time() * 1000) % 1000:03d}"
+    now = datetime.now()
+    timestr = now.strftime("%Y-%m-%d %H:%M:%S.") + f"{now.microsecond:06d}"
     log = f"[{timestr}] {msg}"
     print(log)
     with open("run_log.txt", "a", encoding="utf-8") as f:
         f.write(log + "\n")
 
 def get_server_time():
-    return datetime.now().strftime("%H:%M:%S.") + f"{datetime.now().microsecond // 1000:03d}"
+    now = datetime.now()
+    return now.strftime("%H:%M:%S.") + f"{now.microsecond:06d}"
 
 def clean_timeout_clients():
     now = time.time()
@@ -99,9 +101,9 @@ while running:
     except:
         continue
 
-    # ===================== 解包 7B 首部 !BHHh =====================
+    # ===================== 解包 7B 首部 !BHHH =====================
     try:
-        cmd, sid, dlen, seq = struct.unpack("!BHHh", raw_data[:7])
+        cmd, sid, dlen, seq = struct.unpack("!BHHH", raw_data[:7])
         payload = raw_data[7:7+dlen]
     except:
         continue
@@ -119,7 +121,7 @@ while running:
         state["last_ack"] = -1
         state["sid"] = sid
         # ===================== 7B 回复 =====================
-        srv.sendto(struct.pack("!BHHh", 0, sid, 0, 0), addr)
+        srv.sendto(struct.pack("!BHHH", 0, sid, 0, 0), addr)
         write_log(f"[{addr}] 学生 {real_stu} 连接成功")
 
     # 数据报文 cmd=1
